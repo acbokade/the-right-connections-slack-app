@@ -82,14 +82,17 @@ def create_results_markdown(client):
     display_role = ''
     display_division = ''
     display_keyword = ''
-    if role is not None:
-        display_role = '['
-        for idx in range(len(role)):
-            if idx == len(role) - 1:
-                display_role += role[idx]
-            else:
-                display_role += f"{role[idx]}, "
-        display_role += ']'
+    if len(role) > 0:
+        if len(role) == 1:
+            display_role += role[0]
+        else:
+            display_role = '['
+            for idx in range(len(role)):
+                if idx == len(role) - 1:
+                    display_role += role[idx]
+                else:
+                    display_role += f"{role[idx]}, "
+            display_role += ']'
     if division is not None:
         if len(display_role) > 0:
             display_division = f", {division}" 
@@ -97,6 +100,8 @@ def create_results_markdown(client):
             display_division = division
     if len(display_role) > 0 or len(display_division) > 0:
         display_keyword = f", {keyword}"
+    else:
+        display_keyword = f"{keyword}"
     blocks = []
     connections_count = len(users_messages_count_dict)
     # total_search_results = sum(list(users_messages_count_dict.values()))
@@ -133,19 +138,12 @@ def create_results_markdown(client):
         channel_counts = len(channel_ids)
         blocks.append(
             {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "image",
-                        "image_url": f"{image}",
-                        "alt_text": "Deepika_photo"
-                    },
-                    {
-                        "type": "mrkdwn",
-                        "text": f"<@{user_id}> | {title}"
-                    }
-                ]
-		    }
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"<@{user_id}> | {title}"
+                }
+		    },
         )
         # blocks.append(
         #     {
@@ -182,7 +180,16 @@ def create_results_markdown(client):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"\n\n\n:people_holding_hands: <fakeLink.toHotelPage.com|3 Connections> \n\n\n\n :page_with_curl: <fakelink.toUrl.com|Member Enrollments Requirements> and <fakelink.toUrl.com|5 more>"
+                    "text": f":people_holding_hands: <fakeLink.toHotelPage.com|3 Connections>"
+                }            
+            }
+        )
+        blocks.append(
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f":page_with_curl: <fakelink.toUrl.com|Member Enrollments Requirements> and <fakelink.toUrl.com|5 more>"
                 }            
             }
         )
@@ -219,7 +226,7 @@ def create_results_markdown(client):
 		    }
         )
     end_time = time.time()
-    print(f"create_results_markdown method time taken: {end_time - start_time}")
+    #print(f"create_results_markdown method time taken: {end_time - start_time}")
     return blocks
 
 
@@ -246,14 +253,14 @@ def handle_search_command(ack, body, client):
     # logger.info(body)
     # logger.info(res)
     end_time = time.time()
-    print(f"Search command time taken: {end_time - start_time}")
+    #print(f"Search command time taken: {end_time - start_time}")
 
 
 @app.view("begin_search")
 def submission(ack, body, client):
-    print("enter")
+    #print("enter")
     ack()
-    print("ack")
+    #print("ack")
     start_time = time.time()
     global messages_ts
     global division
@@ -267,7 +274,7 @@ def submission(ack, body, client):
     if len(role_block[element_key]['selected_options']) != 0:
         for idx in range(len(role_block[element_key]['selected_options'])):
             role.append(role_block[element_key]['selected_options'][idx]['text']['text'])
-    print(role)
+    #print(role)
     division = body['view']['state']['values']['division']['plain_text_input-action']['value']
     keyword = body['view']['state']['values']['keyword']['plain_text_input-action']['value']
     search_results = search_messages(client, keyword)
@@ -281,14 +288,14 @@ def submission(ack, body, client):
         mrkdwn=True
     )
     end_time = time.time()
-    print(f"Begin search time taken: {end_time - start_time}")
+    #print(f"Begin search time taken: {end_time - start_time}")
 
 
 def search_messages(client, query):
     start_time = time.time()
     search_results = client.search_messages(token=os.environ.get("USER_TOKEN"), query=query)['messages']['matches']
     end_time = time.time()
-    print(f"Search messages API call time taken: {end_time - start_time}")
+    #print(f"Search messages API call time taken: {end_time - start_time}")
     # filtered_results = []
     # for search_result in search_results:
     #     if search_result['type'] == 'message' and search_result['username'] != "the_right_connections" and "blocks" in search_result:
@@ -301,6 +308,7 @@ def users_messages_count_and_filter_by_role(search_results):
     start_time = time.time()
     global users_messages_count_dict
     global users_messages_dict
+    global role
     users_messages_dict = {}
     users_messages_count_dict = defaultdict(int)
     for message in search_results:
@@ -311,11 +319,15 @@ def users_messages_count_and_filter_by_role(search_results):
         profile_title = user_info['profile']['title']
         user_role = None 
         user_division = None
+        #profile_title)
         if len(profile_title) != 0:
             user_role, user_division = profile_title.split(', ')
-        if role is not None and user_role is not None and user_role not in role:
+        # print(user_role, role)
+        role = [r.strip() for r in role]
+        user_role = user_role.strip()
+        if len(role) != 0 and user_role is not None and user_role not in role:
             continue 
-        if division is not None and user_division is not None and division != user_division:
+        if (division is not None) and user_division is not None and division != user_division:
             continue
         if user_id not in users_messages_dict:
             users_messages_dict[user_id] = [message]
@@ -323,7 +335,7 @@ def users_messages_count_and_filter_by_role(search_results):
             users_messages_dict[user_id].append(message)
         users_messages_count_dict[user_id] += 1
     end_time = time.time()
-    print(f"users_messages_count_and_filter_by_role method time taken: {end_time - start_time}")
+    #print(f"users_messages_count_and_filter_by_role method time taken: {end_time - start_time}")
 
 
 @app.action("view_posts")
@@ -354,7 +366,7 @@ def view_posts(body, ack, say, respond, client):
         message_text = message['text']
         message_link = message['permalink']
         message_block = []
-        print(channel_name)
+        #print(channel_name)
         # msg = message['blocks'][0]
         message_block.append(
             {
@@ -423,7 +435,7 @@ def view_posts(body, ack, say, respond, client):
             )
             messages_ts = res.__dict__['data']['message']['ts']
     end_time = time.time()
-    print(f"View posts time taken: {end_time - start_time}")
+    #f"View posts time taken: {end_time - start_time}")
 
 
 @app.action("next_page")
@@ -868,5 +880,5 @@ all_options = [
 
 # Start your app
 if __name__ == "__main__":
-    user_ids = ['U02AV42PDA7', 'U02ART4DY85', "U02AUTXK8LS", "U02AE6D8G07", "U02BEJC09LK", "U02BDQNSA6Q"]
+    user_ids = ['U02AV42PDA7', 'U02ART4DY85', "U02AUTXK8LS", "U02AE6D8G07"]
     SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()

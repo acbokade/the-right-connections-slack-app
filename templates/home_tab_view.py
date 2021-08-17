@@ -98,6 +98,34 @@ HOME_TAB_VIEW = {
 			]
 		},
 		{
+			"type": "context",
+			"elements": [
+				{
+					"type": "image",
+					"image_url": "https://avatars.slack-edge.com/2021-08-11/2369106248322_94e78f96e072c43b4c13_192.jpg",
+					"alt_text": "Sugandha_photo"
+				},
+				{
+					"type": "mrkdwn",
+					"text": "*<@U02ART4DY85>*\nProduct Manager, Insurance Claims\n9182828338"
+				}
+			]
+		},
+		{
+			"type": "context",
+			"elements": [
+				{
+					"type": "image",
+					"image_url": "https://avatars.slack-edge.com/2021-08-17/2394658556148_3f15d735177e1d9d2680_192.jpg",
+					"alt_text": "Shreya_photo"
+				},
+				{
+					"type": "mrkdwn",
+					"text": "*<@U02AE6D8G07>*\nProduct Manager, FSC\n9082628281"
+				}
+			]
+		},
+		{
 			"type": "header",
 			"text": {
 				"type": "plain_text",
