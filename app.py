@@ -795,16 +795,16 @@ def message_previous_page(body, ack, say, respond, client):
 #     # channels_ts = res.__dict__['data']['message']['ts']
 
 
-@app.options("role_select")
-def role_options_select(ack, body):
-    keyword = body.get("value")
-    print(keyword)
-    if keyword is not None and len(keyword) > 0:
-        options = [o for o in all_options if keyword in o["text"]["text"]]
-        ack(options=options)
-    else:
-        print("all")
-        ack(options=all_options)
+# @app.options("role_select")
+# def role_options_select(ack, body):
+#     keyword = body.get("value")
+#     print(keyword)
+#     if keyword is not None and len(keyword) > 0:
+#         options = [o for o in all_options if keyword in o["text"]["text"]]
+#         ack(options=options)
+#     else:
+#         print("all")
+#         ack(options=all_options)
 
 
 all_options = [
@@ -868,5 +868,5 @@ all_options = [
 
 # Start your app
 if __name__ == "__main__":
-    user_ids = ['U02AV42PDA7', 'U02ART4DY85', "U02AUTXK8LS"]
+    user_ids = ['U02AV42PDA7', 'U02ART4DY85', "U02AUTXK8LS", "U02AE6D8G07", "U02BEJC09LK", "U02BDQNSA6Q"]
     SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
