@@ -24,7 +24,7 @@ from summarizer import Summarizer
 import re
 import pickle
 
-model = SentenceTransformer('stsb-roberta-large')
+model = SentenceTransformer('sentence-transformers/bert-base-nli-mean-tokens')
 vectorizer = pickle.load(open("vectorizer", 'rb'))
 question_model = pickle.load(open("interrogative_model", 'rb'))
 summarizer_model = Summarizer()
@@ -462,7 +462,8 @@ def view_posts(body, ack, say, respond, client):
     end = min(start+messages_per_page, msgs_count)
     msgs = total_msgs[start:end]
     
-    for message in msgs:
+    for index in range(len(msgs)):
+        message = msgs[index]
         channel_name = message['channel']['name']
         message_text = message['text']
         message_link = message['permalink']
@@ -493,6 +494,15 @@ def view_posts(body, ack, say, respond, client):
                     }
                 ]
             },
+        )
+        if index==0:
+            message_block.append({
+			    "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": ":star: *Top Answer*"
+                }
+            }
         )
         # message_block.append(
         #     {
@@ -700,7 +710,8 @@ def message_previous_page(body, ack, say, respond, client):
     end = start
     start = max(0, end-messages_per_page)
     msgs = total_msgs[start:end]
-    for message in msgs:
+    for index in range(len(msgs)):
+        message = msgs[index]
         channel_name = message['channel']['name']
         message_text = message['text']
         message_link = message['permalink']
@@ -730,6 +741,15 @@ def message_previous_page(body, ack, say, respond, client):
                         "text": f"<@{user_id}>"
                     }
                 ]
+            }
+        )
+        if start+index==0:
+            message_block.append({
+			    "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": ":star: *Top Answer*"
+                }
             }
         )
         message_block.append(
