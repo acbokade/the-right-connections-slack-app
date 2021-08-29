@@ -19,14 +19,14 @@ from rake_nltk import Rake
 from sentence_transformers import SentenceTransformer
 from numpy import dot, vectorize
 from numpy.linalg import norm
-from summarizer import Summarizer
+from summarizer import Summarizer #BERT Extractive Summarizer
 
 import re
 import pickle
 
-model = SentenceTransformer('sentence-transformers/bert-base-nli-mean-tokens')
+model = SentenceTransformer('sentence-transformers/bert-base-nli-mean-tokens')#BERT Model
 vectorizer = pickle.load(open("vectorizer", 'rb'))
-question_model = pickle.load(open("interrogative_model", 'rb'))
+question_model = pickle.load(open("interrogative_model", 'rb'))#Gradient Boosting Classifier
 summarizer_model = Summarizer()
 
 # loading environment variables
@@ -310,7 +310,7 @@ def get_search_results(client, input):
     rake_var.extract_keywords_from_text(input)
     key_phrases = rake_var.get_ranked_phrases()
     key_phrases = [word for phrase in key_phrases for word in phrase.split() ]
-    print(key_phrases)
+    #print(key_phrases)
     seen_ts=set()
     search_results=[]
     for phrase in key_phrases:
@@ -340,7 +340,7 @@ def calculate_similarity(client, search_results, input_sentence):
             download_file(title, link)
             text = text+read_pdf(title)
         message['is_question'] = is_interrogative([text])
-        print(keyword)
+        #print(keyword)
         print(text)
         #print(type(message['is_question']))
         message_embedding = model.encode(text)
@@ -351,14 +351,19 @@ def calculate_similarity(client, search_results, input_sentence):
         #message_embedding.reshape(-1,1)
         #cos_sim = dot(a, b)/(norm(a)*norm(b))
         cosine_similarity = dot(message_embedding, input_embedding)/(norm(input_embedding)*norm(message_embedding))
-        print(cosine_similarity)
+        #print(cosine_similarity)
+        
         #if similarity is greater than a threshold and quesion is interrogative, replace message with reply.
         if cosine_similarity > 0.7 and message['is_question']:
             reply_message = get_best_reply(client, message['channel']['id'], message['ts'])
             if reply_message is not None:
-                message = reply_message
+                for k,v in reply_message.items():
+                    message[k]=v
+                # message = reply_message
 
         message['sentence_similarity'] = cosine_similarity
+
+        
     return search_results
 
 
@@ -369,6 +374,9 @@ def is_interrogative(input):
 
 def get_best_reply(client, channel, ts):
     replies = client.conversations_replies(token=os.environ.get("SLACK_BOT_TOKEN"), channel=channel, ts=ts)['messages']
+    #print("Replies Length is")
+    #print(len(replies))
+    #permalink = client.reactions_get(token=os.environ.get("USER_TOKEN"), channel='C02AV65UAQ2', ts='1630255947.004800'])['message']['permalink']
     best_reply = None
     max_reactions = 0
     for reply in replies:
@@ -379,7 +387,7 @@ def get_best_reply(client, channel, ts):
         if max_reactions < n_reactions:
             max_reactions = n_reactions
             best_reply = reply
-            permalink = client.reactions_get(token=os.environ.get("SLACK_BOT_TOKEN"), channel=channel, ts=reply['ts'])['message']['permalink']
+            permalink = client.reactions_get(token=os.environ.get("USER_TOKEN"), channel=channel, timestamp=reply['ts'])['message']['permalink']
             best_reply['permalink'] = permalink
     return best_reply
 
@@ -427,6 +435,9 @@ def users_messages_count_and_filter_by_role(search_results):
         else:
             users_messages_dict[user_id].append(message)
         count, similarity = users_messages_count_dict[user_id]
+        #print("##########")
+        #print(message)
+        #print("########")
         users_messages_count_dict[user_id] = (count+1, max(similarity, message['sentence_similarity']))
     
     for user_id, message_list in users_messages_dict.items():
@@ -838,7 +849,7 @@ def summarize_doc(body, ack, say, respond, client):
     download_link = doc_text['url_private']
     download_file(title, download_link)
     text = read_pdf(title)
-    summarized_text = summarizer_model(text, ratio=0.3)
+    summarized_text = summarizer_model(text, num_sentences=10)
     res = app.client.views_update(
         view_id=view_id,
         view={
@@ -1166,7 +1177,7 @@ def test_summarize_file(ack, body, client):
         if "files" in message:
             title = message['files'][0]['title']
             download_link = message['files'][0]['url_private']
-            print(download_link)
+            #print(download_link)
             download_file(title, download_link)
             text = read_pdf(title)
             summarized_text = summarize_text(text)
@@ -1197,5 +1208,5 @@ def test_summarize_file(ack, body, client):
 
 # Start your app
 if __name__ == "__main__":
-    user_ids = ['U02AV42PDA7', 'U02ART4DY85', "U02AUTXK8LS", "U02AE6D8G07"]
+    user_ids = ['U02AV42PDA7', 'U02ART4DY85', "U02AUTXK8LS", "U02AE6D8G07", "U02CD9BPK7Y"]
     SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
