@@ -4,15 +4,16 @@ import logging
 import time
 from dotenv import load_dotenv
 from pathlib import Path 
+from utils import download_file, read_pdf
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_bolt.logger import messages
 from slack_bolt.context.ack.ack import Ack
 from templates.search_modal_view import SEARCH_MODAL_VIEW
 from templates.home_tab_view import HOME_TAB_VIEW
-from templates.test_view import TEST_VIEW
 from templates.pagination_button_view import PAGINATION_VIEW, NEXT_VIEW, PREVIOUS_VIEW
 from templates.pagination_channel_view import PAGINATION_CHANNEL_VIEW, NEXT_CHANNEL_VIEW, PREVIOUS_CHANNEL_VIEW
+from text_summarizer import summarize_text
 
 # loading environment variables
 env_path = Path('.') / '.env'
@@ -39,6 +40,8 @@ role = None
 division = None 
 keyword = None
 user_ids = None
+
+DOWNLOADS_PATH = os.path.join(os.getcwd(), 'downloads')
 # channels_per_page = 1
 # channels_ts = None
 # channel_page_start = 0
@@ -877,6 +880,69 @@ all_options = [
         "value": "value-7"
     }
 ]
+
+
+@app.command("/summarize-pdf")
+def test_summarize_file(ack, body, client):
+    ack()
+    res = client.views_open(
+        trigger_id=body["trigger_id"],
+        view = {
+            "type": "modal",
+            "title": {
+                "type": "plain_text",
+                "text": "Summarized text",
+            },
+            "close": {
+                "type": "plain_text",
+                "text": "Cancel",
+	        },
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "Wait for AI to summarize the text"
+                    }
+                },
+            ]
+        }
+    )
+    view_id = res['view']['id']
+    # print(res)
+    messages = client.conversations_history(channel='C02AE62M51V')['messages']
+    for message in messages:
+        if "files" in message:
+            title = message['files'][0]['title']
+            download_link = message['files'][0]['url_private']
+            print(download_link)
+            download_file(title, download_link)
+            text = read_pdf(title)
+            summarized_text = summarize_text(text)
+            res = app.client.views_update(
+                view_id=view_id,
+                view={
+                    "type": "modal",
+                    "title": {
+                        "type": "plain_text",
+                        "text": "Summarized text",
+                    },
+                    "close": {
+                        "type": "plain_text",
+                        "text": "Cancel",
+                    },
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"{summarized_text}"
+                            }
+                        },
+                    ]
+                }
+            )
+
 
 # Start your app
 if __name__ == "__main__":
