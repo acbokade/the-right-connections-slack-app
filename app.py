@@ -24,7 +24,7 @@ from summarizer import Summarizer
 import re
 import pickle
 
-model = SentenceTransformer('sentence-transformers/bert-base-nli-mean-tokens')
+model = SentenceTransformer('stsb-roberta-large')
 vectorizer = pickle.load(open("vectorizer", 'rb'))
 question_model = pickle.load(open("interrogative_model", 'rb'))
 summarizer_model = Summarizer()
@@ -128,6 +128,7 @@ def create_results_markdown(client):
     )
     for user_id, tuple_count in users_messages_count_dict.items():
         messages_count, similarity = tuple_count
+        # sorted_users_messages_dict = sorted(users_messages_dict.items(), key=lambda)
         user_messages = users_messages_dict[user_id]
         # s_time = time.time()
         # user_info = client.users_info(user=user_id)['user']
@@ -288,14 +289,7 @@ def submission(ack, body, client):
     keyword = body['view']['state']['values']['keyword']['plain_text_input-action']['value']
     #search_results = search_messages(client, keyword)
 
-    rake_var = Rake(max_length=2)
-    rake_var.extract_keywords_from_text(keyword)
-
-    key_phrases = rake_var.get_ranked_phrases()
-
-    key_phrases = [word for phrase in key_phrases for word in phrase.split() ]
-    #print(key_phrases)
-    search_results = [message for phrase in key_phrases for message in search_messages(client, phrase)]
+    search_results = get_search_results(client, keyword)
     search_results = calculate_similarity(client, search_results, keyword)
     #print(search_results)
 
@@ -311,6 +305,22 @@ def submission(ack, body, client):
     end_time = time.time()
     #print(f"Begin search time taken: {end_time - start_time}")
 
+def get_search_results(client, input):
+    rake_var = Rake()
+    rake_var.extract_keywords_from_text(input)
+    key_phrases = rake_var.get_ranked_phrases()
+    key_phrases = [word for phrase in key_phrases for word in phrase.split() ]
+    print(key_phrases)
+    seen_ts=set()
+    search_results=[]
+    for phrase in key_phrases:
+        messages = search_messages(client, phrase)
+        for message in messages:
+            if message['ts'] not in seen_ts:
+                seen_ts.add(message['ts'])
+                search_results.append(message)
+    return search_results
+
 
 def calculate_similarity(client, search_results, input_sentence):
     input_embedding = model.encode(input_sentence)
@@ -323,12 +333,16 @@ def calculate_similarity(client, search_results, input_sentence):
         #replace emojis in text
         #TODO replace links
         text = re.sub("(?s):.*?:", "", text) 
-
-
+        #if it has a pdf link, include pdf text in similarity calculations.
+        if 'files' in message and message['files'][0]['url_private'] is not None and message['files'][0]['url_private'].endswith(".pdf"):
+            link=message['files'][0]['url_private']
+            title = message['files'][0]['title']
+            download_file(title, link)
+            text = text+read_pdf(title)
         message['is_question'] = is_interrogative([text])
         print(keyword)
         print(text)
-        print(message['is_question'])
+        #print(type(message['is_question']))
         message_embedding = model.encode(text)
 
         #print(input_embedding.shape)
@@ -339,16 +353,12 @@ def calculate_similarity(client, search_results, input_sentence):
         cosine_similarity = dot(message_embedding, input_embedding)/(norm(input_embedding)*norm(message_embedding))
         print(cosine_similarity)
         #if similarity is greater than a threshold and quesion is interrogative, replace message with reply.
-
-
-
         if cosine_similarity > 0.7 and message['is_question']:
             reply_message = get_best_reply(client, message['channel']['id'], message['ts'])
             if reply_message is not None:
                 message = reply_message
 
         message['sentence_similarity'] = cosine_similarity
-
     return search_results
 
 
@@ -369,6 +379,8 @@ def get_best_reply(client, channel, ts):
         if max_reactions < n_reactions:
             max_reactions = n_reactions
             best_reply = reply
+            permalink = client.reactions_get(token=os.environ.get("SLACK_BOT_TOKEN"), channel=channel, ts=reply['ts'])['message']['permalink']
+            best_reply['permalink'] = permalink
     return best_reply
 
 
@@ -416,6 +428,10 @@ def users_messages_count_and_filter_by_role(search_results):
             users_messages_dict[user_id].append(message)
         count, similarity = users_messages_count_dict[user_id]
         users_messages_count_dict[user_id] = (count+1, max(similarity, message['sentence_similarity']))
+    
+    for user_id, message_list in users_messages_dict.items():
+        sorted_message_list = sorted(message_list, key=lambda x: -x['sentence_similarity'])
+        users_messages_dict[user_id] = sorted_message_list
     end_time = time.time()
     #print(f"users_messages_count_and_filter_by_role method time taken: {end_time - start_time}")
 
@@ -434,6 +450,7 @@ def view_posts(body, ack, say, respond, client):
     image = user_info['profile']['image_192']
 
     total_msgs = users_messages_dict[user_id]
+    #total_msgs = sorted(total_msgs, key=lambda x: x['sentence_similarity'])
     global msgs_count
     msgs_count = len(total_msgs)
     # start: start+messages_per_page
@@ -444,6 +461,7 @@ def view_posts(body, ack, say, respond, client):
     global doc_text
     end = min(start+messages_per_page, msgs_count)
     msgs = total_msgs[start:end]
+    
     for message in msgs:
         channel_name = message['channel']['name']
         message_text = message['text']
@@ -489,7 +507,7 @@ def view_posts(body, ack, say, respond, client):
         #             "alt_text": "Best answer"
         #         }
         #     }
-        )
+        #)
         message_block.append(
             {
                 "type": "section",
