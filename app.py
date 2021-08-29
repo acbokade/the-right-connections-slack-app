@@ -345,8 +345,8 @@ def calculate_similarity(search_results, input_sentence):
 
 
 
-        if cosine_similarity>0.7:
-            message = get_best_reply(message['channel'], message['ts'])
+        # if cosine_similarity>0.7:
+        #     message = get_best_reply(message['channel'], message['ts'])
             
         message['sentence_similarity'] = cosine_similarity
 
