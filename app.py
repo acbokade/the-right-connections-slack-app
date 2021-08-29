@@ -15,11 +15,23 @@ from templates.pagination_button_view import PAGINATION_VIEW, NEXT_VIEW, PREVIOU
 from templates.pagination_channel_view import PAGINATION_CHANNEL_VIEW, NEXT_CHANNEL_VIEW, PREVIOUS_CHANNEL_VIEW
 from text_summarizer import summarize_text
 
+from rake_nltk import Rake
+from sentence_transformers import SentenceTransformer
+from numpy import dot, vectorize
+from numpy.linalg import norm
+
+import re
+import pickle
+
+model = SentenceTransformer('sentence-transformers/bert-base-nli-mean-tokens')
+vectorizer = vectorizer = pickle.load(open("vectorizer", 'rb'))
+question_model = pickle.load(open("interrogative_model", 'rb'))
+
 # loading environment variables
 env_path = Path('.') / '.env'
 load_dotenv(dotenv_path=env_path)
 
-# logger in a global context
+# logger in a global contextd
 # requires importing logging
 logging.basicConfig(level=logging.ERROR)
 
@@ -123,7 +135,8 @@ def create_results_markdown(client):
             "type": "divider"
         }
     )
-    for user_id, messages_count in users_messages_count_dict.items():
+    for user_id, tuple_count in users_messages_count_dict.items():
+        messages_count, similarity = tuple_count
         user_messages = users_messages_dict[user_id]
         # s_time = time.time()
         # user_info = client.users_info(user=user_id)['user']
@@ -280,10 +293,22 @@ def submission(ack, body, client):
     #print(role)
     division = body['view']['state']['values']['division']['plain_text_input-action']['value']
     keyword = body['view']['state']['values']['keyword']['plain_text_input-action']['value']
-    search_results = search_messages(client, keyword)
+    #search_results = search_messages(client, keyword)
+
+    rake_var = Rake(max_length=2)
+    rake_var.extract_keywords_from_text(keyword)
+
+    key_phrases = rake_var.get_ranked_phrases()
+
+    key_phrases = [word for phrase in key_phrases for word in phrase.split() ]
+    #print(key_phrases)
+    search_results = [message for phrase in key_phrases for message in search_messages(client, phrase)]
+    search_results = calculate_similarity(search_results, keyword)
+    #print(search_results)
+
     users_messages_count_and_filter_by_role(search_results)
     global users_messages_count_dict
-    users_messages_count_dict = dict(sorted(users_messages_count_dict.items(), key = lambda item: -item[1]))
+    users_messages_count_dict = dict(sorted(users_messages_count_dict.items(), key = lambda item: -item[1][1]))
     results_markdown = create_results_markdown(client)
     res = client.chat_postMessage(
         channel=channel_id,
@@ -292,6 +317,56 @@ def submission(ack, body, client):
     )
     end_time = time.time()
     #print(f"Begin search time taken: {end_time - start_time}")
+
+def calculate_similarity(search_results, input_sentence):
+    input_embedding = model.encode(input_sentence)
+    for message in search_results:
+        if message['type'] != 'message' or message['username'] == "the_right_connections" or "blocks" not in message:
+            continue
+        text = message['text']
+        text = text.replace('\n', '')
+        text = text.replace('\t', '')
+        #replace emojis in text
+         #TODO replace links
+        text = re.sub("(?s):.*?:", "",text) 
+
+
+        message['is_question']=is_interrogative([text])
+        print(keyword)
+        print(text)
+        print(message['is_question'])
+        message_embedding = model.encode(text)
+
+        #print(input_embedding.shape)
+        #print(message_embedding.shape)
+        #input_embedding.reshape(-1,1)
+        #message_embedding.reshape(-1,1)
+        #cos_sim = dot(a, b)/(norm(a)*norm(b))
+        cosine_similarity = dot(message_embedding, input_embedding)/(norm(input_embedding)*norm(message_embedding))
+        print(cosine_similarity)
+        #if similarity is greater than a threshold and quesion is interrogative, replace message with reply.
+
+
+
+        # if cosine_similarity>0.7:
+        #     message = get_best_reply(message['channel'], message['ts'])
+            
+        message['sentence_similarity'] = cosine_similarity
+
+    return search_results
+
+
+def is_interrogative(input):
+
+    res = question_model.predict(vectorizer.transform(input))
+    return (res[0]=='whQuestion' or res[0]=='ynQuestion')
+
+
+# def get_best_reply(client, channel, ts):
+#     replies = client.conversations_replies(token=os.environ.get("USER_TOKEN"),channel=channel, ts=ts)['messages']
+#     for reply in reply['messages']:
+#         reactions = client.reactions.get(channel=channel, ts=reply['ts'])
+
 
 
 def search_messages(client, query):
@@ -313,7 +388,7 @@ def users_messages_count_and_filter_by_role(search_results):
     global users_messages_dict
     global role
     users_messages_dict = {}
-    users_messages_count_dict = defaultdict(int)
+    users_messages_count_dict = defaultdict(lambda: (0, 0.0))
     for message in search_results:
         if message['type'] != 'message' or message['username'] == "the_right_connections" or "blocks" not in message:
             continue
@@ -336,7 +411,8 @@ def users_messages_count_and_filter_by_role(search_results):
             users_messages_dict[user_id] = [message]
         else:
             users_messages_dict[user_id].append(message)
-        users_messages_count_dict[user_id] += 1
+        count, similarity = users_messages_count_dict[user_id]
+        users_messages_count_dict[user_id] = (count+1, max(similarity, message['sentence_similarity']))
     end_time = time.time()
     #print(f"users_messages_count_and_filter_by_role method time taken: {end_time - start_time}")
 
