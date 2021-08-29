@@ -19,13 +19,15 @@ from rake_nltk import Rake
 from sentence_transformers import SentenceTransformer
 from numpy import dot, vectorize
 from numpy.linalg import norm
+from summarizer import Summarizer
 
 import re
 import pickle
 
 model = SentenceTransformer('sentence-transformers/bert-base-nli-mean-tokens')
-vectorizer = vectorizer = pickle.load(open("vectorizer", 'rb'))
+vectorizer = pickle.load(open("vectorizer", 'rb'))
 question_model = pickle.load(open("interrogative_model", 'rb'))
+summarizer_model = Summarizer()
 
 # loading environment variables
 env_path = Path('.') / '.env'
@@ -52,6 +54,7 @@ role = None
 division = None 
 keyword = None
 user_ids = None
+doc_text = None
 
 DOWNLOADS_PATH = os.path.join(os.getcwd(), 'downloads')
 # channels_per_page = 1
@@ -73,18 +76,6 @@ def update_home_tab(client, event, logger):
         )
     except Exception as e:
         logger.error(f"Error publishing home tab: {e}")
-
-
-@app.shortcut("open_search_modal")
-def open_search_modal(ack, client, logger, body):
-    # {'type': 'shortcut', 'token': 'sXTZ5s0dz0ozfA50F7G94v3C', 'action_ts': '1628847754.898705', 'team': {'id': 'T02AE62LK0F', 'domain': 'salesforce-5nj8917'}, 'user': {'id': 'U02AV42PDA7', 'username': 'acbokade', 'team_id': 'T02AE62LK0F'}, 'is_enterprise_install': False, 'enterprise': None, 'callback_id': 'open_search_modal', 'trigger_id': '2378137698931.2354206699015.d1793b222942ed274c201b8c7a052eb1'}
-    # open a modal
-    ack()
-    api_response = client.views_open(
-        trigger_id=body["trigger_id"],
-        view=SEARCH_MODAL_VIEW
-    )
-    #logger.debug(api_response)
 
 
 def create_results_markdown(client):
@@ -260,7 +251,9 @@ def handle_search_command(ack, body, client):
     global role
     role = None
     global division
+    global doc_text
     division = None
+    doc_text = None
     users_info_dict = {}
     channel_id = body['channel_id']
     for user_id in user_ids:
@@ -303,7 +296,7 @@ def submission(ack, body, client):
     key_phrases = [word for phrase in key_phrases for word in phrase.split() ]
     #print(key_phrases)
     search_results = [message for phrase in key_phrases for message in search_messages(client, phrase)]
-    search_results = calculate_similarity(search_results, keyword)
+    search_results = calculate_similarity(client, search_results, keyword)
     #print(search_results)
 
     users_messages_count_and_filter_by_role(search_results)
@@ -318,7 +311,8 @@ def submission(ack, body, client):
     end_time = time.time()
     #print(f"Begin search time taken: {end_time - start_time}")
 
-def calculate_similarity(search_results, input_sentence):
+
+def calculate_similarity(client, search_results, input_sentence):
     input_embedding = model.encode(input_sentence)
     for message in search_results:
         if message['type'] != 'message' or message['username'] == "the_right_connections" or "blocks" not in message:
@@ -327,11 +321,11 @@ def calculate_similarity(search_results, input_sentence):
         text = text.replace('\n', '')
         text = text.replace('\t', '')
         #replace emojis in text
-         #TODO replace links
-        text = re.sub("(?s):.*?:", "",text) 
+        #TODO replace links
+        text = re.sub("(?s):.*?:", "", text) 
 
 
-        message['is_question']=is_interrogative([text])
+        message['is_question'] = is_interrogative([text])
         print(keyword)
         print(text)
         print(message['is_question'])
@@ -348,25 +342,34 @@ def calculate_similarity(search_results, input_sentence):
 
 
 
-        # if cosine_similarity>0.7:
-        #     message = get_best_reply(message['channel'], message['ts'])
-            
+        if cosine_similarity > 0.7 and message['is_question']:
+            reply_message = get_best_reply(client, message['channel']['id'], message['ts'])
+            if reply_message is not None:
+                message = reply_message
+
         message['sentence_similarity'] = cosine_similarity
 
     return search_results
 
 
 def is_interrogative(input):
-
     res = question_model.predict(vectorizer.transform(input))
     return (res[0]=='whQuestion' or res[0]=='ynQuestion')
 
 
-# def get_best_reply(client, channel, ts):
-#     replies = client.conversations_replies(token=os.environ.get("USER_TOKEN"),channel=channel, ts=ts)['messages']
-#     for reply in reply['messages']:
-#         reactions = client.reactions.get(channel=channel, ts=reply['ts'])
-
+def get_best_reply(client, channel, ts):
+    replies = client.conversations_replies(token=os.environ.get("SLACK_BOT_TOKEN"), channel=channel, ts=ts)['messages']
+    best_reply = None
+    max_reactions = 0
+    for reply in replies:
+        if "reply_count" in reply or "reactions" not in reply:
+            continue
+        # reactions = client.reactions.get(channel=channel, ts=reply['ts'])
+        n_reactions = len(reply['reactions'])
+        if max_reactions < n_reactions:
+            max_reactions = n_reactions
+            best_reply = reply
+    return best_reply
 
 
 def search_messages(client, query):
@@ -438,6 +441,7 @@ def view_posts(body, ack, say, respond, client):
     start = 0
     global end
     global messages_per_page
+    global doc_text
     end = min(start+messages_per_page, msgs_count)
     msgs = total_msgs[start:end]
     for message in msgs:
@@ -470,7 +474,21 @@ def view_posts(body, ack, say, respond, client):
                         "text": f"<@{user_id}>"
                     }
                 ]
-            }
+            },
+        )
+        # message_block.append(
+        #     {
+        #         "type": "section",
+        #         "text": {
+        #             "type": "mrkdwn",
+        #             "text": " "
+        #         },
+        #         "accessory": {
+        #             "type": "image",
+        #             "image_url": "https://cdn.pixabay.com/photo/2016/03/31/14/37/check-mark-1292787_1280.png",
+        #             "alt_text": "Best answer"
+        #         }
+        #     }
         )
         message_block.append(
             {
@@ -490,6 +508,26 @@ def view_posts(body, ack, say, respond, client):
                 }
             }
         )
+        if "files" in message:
+            doc_text = message['files'][0]
+            message_block.append(
+                {
+                    "type": "actions",
+                    "block_id": f"{user_id}",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "action_id": "view_doc_summary",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "View summary of document",
+                            },
+                            "style": "primary",
+                            "value": "click_me_123"
+                        }
+                    ]
+                }
+            )
         # message_block.append(msg)
         if start == 0 and end == msgs_count:
             pass
@@ -527,6 +565,7 @@ def message_next_page(body, ack, say, respond, client):
     global messages_per_page
     global user_id
     global users_messages_dict
+    global doc_text
     user_info = users_info_dict[user_id]
     image = user_info['profile']['image_192']
 
@@ -586,6 +625,26 @@ def message_next_page(body, ack, say, respond, client):
                 }
             }
         )
+        if "files" in message:
+            doc_text = message['files'][0]
+            message_block.append(
+                {
+                    "type": "actions",
+                    "block_id": f"{user_id}",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "action_id": "view_doc_summary",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "View summary of document",
+                            },
+                            "style": "primary",
+                            "value": "click_me_123"
+                        }
+                    ]
+                }
+            )
         # message_block.append(msg)
         if start == 0 and end == msgs_count:
             pass
@@ -613,6 +672,7 @@ def message_previous_page(body, ack, say, respond, client):
     global messages_per_page
     global user_id
     global users_messages_dict
+    global doc_text
     user_info = users_info_dict[user_id]
     image = user_info['profile']['image_192']
 
@@ -672,6 +732,26 @@ def message_previous_page(body, ack, say, respond, client):
                 }
             }
         )
+        if "files" in message:
+            doc_text = message['files'][0]
+            message_block.append(
+                {
+                    "type": "actions",
+                    "block_id": f"{user_id}",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "action_id": "view_doc_summary",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "View summary of document",
+                            },
+                            "style": "primary",
+                            "value": "click_me_123"
+                        }
+                    ]
+                }
+            )
         # message_block.append(msg)
         if start == 0 and end == msgs_count:
             pass
@@ -687,6 +767,63 @@ def message_previous_page(body, ack, say, respond, client):
             blocks=message_block,
             mrkdwn=True
         )
+
+
+@app.action("view_doc_summary")
+def summarize_doc(body, ack, say, respond, client):
+    ack()
+    res = client.views_open(
+        trigger_id=body["trigger_id"],
+        view = {
+            "type": "modal",
+            "title": {
+                "type": "plain_text",
+                "text": "Summarized text",
+            },
+            "close": {
+                "type": "plain_text",
+                "text": "Cancel",
+	        },
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "Wait for AI to summarize the text"
+                    }
+                },
+            ]
+        }
+    )
+    view_id = res['view']['id']
+    title = doc_text['title']
+    download_link = doc_text['url_private']
+    download_file(title, download_link)
+    text = read_pdf(title)
+    summarized_text = summarizer_model(text, ratio=0.3)
+    res = app.client.views_update(
+        view_id=view_id,
+        view={
+            "type": "modal",
+            "title": {
+                "type": "plain_text",
+                "text": "Summarized text",
+            },
+            "close": {
+                "type": "plain_text",
+                "text": "Cancel",
+            },
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"{summarized_text}"
+                    }
+                },
+            ]
+        }
+    )
 
 
 # @app.action("channel_click")
