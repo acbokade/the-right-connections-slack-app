@@ -4,21 +4,36 @@ import logging
 import time
 from dotenv import load_dotenv
 from pathlib import Path 
+from utils import download_file, read_pdf
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_bolt.logger import messages
 from slack_bolt.context.ack.ack import Ack
 from templates.search_modal_view import SEARCH_MODAL_VIEW
 from templates.home_tab_view import HOME_TAB_VIEW
-from templates.test_view import TEST_VIEW
 from templates.pagination_button_view import PAGINATION_VIEW, NEXT_VIEW, PREVIOUS_VIEW
 from templates.pagination_channel_view import PAGINATION_CHANNEL_VIEW, NEXT_CHANNEL_VIEW, PREVIOUS_CHANNEL_VIEW
+from text_summarizer import summarize_text
+
+from rake_nltk import Rake
+from sentence_transformers import SentenceTransformer
+from numpy import dot, vectorize
+from numpy.linalg import norm
+from summarizer import Summarizer #BERT Extractive Summarizer
+
+import re
+import pickle
+
+model = SentenceTransformer('sentence-transformers/bert-base-nli-mean-tokens')#BERT Model
+vectorizer = pickle.load(open("vectorizer", 'rb'))
+question_model = pickle.load(open("interrogative_model", 'rb'))#Gradient Boosting Classifier
+summarizer_model = Summarizer()
 
 # loading environment variables
 env_path = Path('.') / '.env'
 load_dotenv(dotenv_path=env_path)
 
-# logger in a global context
+# logger in a global contextd
 # requires importing logging
 logging.basicConfig(level=logging.ERROR)
 
@@ -39,6 +54,9 @@ role = None
 division = None 
 keyword = None
 user_ids = None
+doc_text = None
+
+DOWNLOADS_PATH = os.path.join(os.getcwd(), 'downloads')
 # channels_per_page = 1
 # channels_ts = None
 # channel_page_start = 0
@@ -58,18 +76,6 @@ def update_home_tab(client, event, logger):
         )
     except Exception as e:
         logger.error(f"Error publishing home tab: {e}")
-
-
-@app.shortcut("open_search_modal")
-def open_search_modal(ack, client, logger, body):
-    # {'type': 'shortcut', 'token': 'sXTZ5s0dz0ozfA50F7G94v3C', 'action_ts': '1628847754.898705', 'team': {'id': 'T02AE62LK0F', 'domain': 'salesforce-5nj8917'}, 'user': {'id': 'U02AV42PDA7', 'username': 'acbokade', 'team_id': 'T02AE62LK0F'}, 'is_enterprise_install': False, 'enterprise': None, 'callback_id': 'open_search_modal', 'trigger_id': '2378137698931.2354206699015.d1793b222942ed274c201b8c7a052eb1'}
-    # open a modal
-    ack()
-    api_response = client.views_open(
-        trigger_id=body["trigger_id"],
-        view=SEARCH_MODAL_VIEW
-    )
-    #logger.debug(api_response)
 
 
 def create_results_markdown(client):
@@ -120,7 +126,9 @@ def create_results_markdown(client):
             "type": "divider"
         }
     )
-    for user_id, messages_count in users_messages_count_dict.items():
+    for user_id, tuple_count in users_messages_count_dict.items():
+        messages_count, similarity = tuple_count
+        # sorted_users_messages_dict = sorted(users_messages_dict.items(), key=lambda)
         user_messages = users_messages_dict[user_id]
         # s_time = time.time()
         # user_info = client.users_info(user=user_id)['user']
@@ -244,7 +252,9 @@ def handle_search_command(ack, body, client):
     global role
     role = None
     global division
+    global doc_text
     division = None
+    doc_text = None
     users_info_dict = {}
     channel_id = body['channel_id']
     for user_id in user_ids:
@@ -277,10 +287,15 @@ def submission(ack, body, client):
     #print(role)
     division = body['view']['state']['values']['division']['plain_text_input-action']['value']
     keyword = body['view']['state']['values']['keyword']['plain_text_input-action']['value']
-    search_results = search_messages(client, keyword)
+    #search_results = search_messages(client, keyword)
+
+    search_results = get_search_results(client, keyword)
+    search_results = calculate_similarity(client, search_results, keyword)
+    #print(search_results)
+
     users_messages_count_and_filter_by_role(search_results)
     global users_messages_count_dict
-    users_messages_count_dict = dict(sorted(users_messages_count_dict.items(), key = lambda item: -item[1]))
+    users_messages_count_dict = dict(sorted(users_messages_count_dict.items(), key = lambda item: -item[1][1]))
     results_markdown = create_results_markdown(client)
     res = client.chat_postMessage(
         channel=channel_id,
@@ -289,6 +304,92 @@ def submission(ack, body, client):
     )
     end_time = time.time()
     #print(f"Begin search time taken: {end_time - start_time}")
+
+def get_search_results(client, input):
+    rake_var = Rake()
+    rake_var.extract_keywords_from_text(input)
+    key_phrases = rake_var.get_ranked_phrases()
+    key_phrases = [word for phrase in key_phrases for word in phrase.split() ]
+    #print(key_phrases)
+    seen_ts=set()
+    search_results=[]
+    for phrase in key_phrases:
+        messages = search_messages(client, phrase)
+        for message in messages:
+            if message['ts'] not in seen_ts:
+                seen_ts.add(message['ts'])
+                search_results.append(message)
+    return search_results
+
+
+def calculate_similarity(client, search_results, input_sentence):
+    input_embedding = model.encode(input_sentence)
+    for message in search_results:
+        if message['type'] != 'message' or message['username'] == "the_right_connections" or "blocks" not in message:
+            continue
+        text = message['text']
+        text = text.replace('\n', '')
+        text = text.replace('\t', '')
+        #replace emojis in text
+        #TODO replace links
+        text = re.sub("(?s):.*?:", "", text) 
+        #if it has a pdf link, include pdf text in similarity calculations.
+        if 'files' in message and message['files'][0]['url_private'] is not None and message['files'][0]['url_private'].endswith(".pdf"):
+            link=message['files'][0]['url_private']
+            title = message['files'][0]['title']
+            download_file(title, link)
+            text = text+read_pdf(title)
+        message['is_question'] = is_interrogative([text])
+        #print(keyword)
+        print(text)
+        #print(type(message['is_question']))
+        message_embedding = model.encode(text)
+
+        #print(input_embedding.shape)
+        #print(message_embedding.shape)
+        #input_embedding.reshape(-1,1)
+        #message_embedding.reshape(-1,1)
+        #cos_sim = dot(a, b)/(norm(a)*norm(b))
+        cosine_similarity = dot(message_embedding, input_embedding)/(norm(input_embedding)*norm(message_embedding))
+        #print(cosine_similarity)
+        
+        #if similarity is greater than a threshold and quesion is interrogative, replace message with reply.
+        if cosine_similarity > 0.7 and message['is_question']:
+            reply_message = get_best_reply(client, message['channel']['id'], message['ts'])
+            if reply_message is not None:
+                for k,v in reply_message.items():
+                    message[k]=v
+                # message = reply_message
+
+        message['sentence_similarity'] = cosine_similarity
+
+        
+    return search_results
+
+
+def is_interrogative(input):
+    res = question_model.predict(vectorizer.transform(input))
+    return (res[0]=='whQuestion' or res[0]=='ynQuestion')
+
+
+def get_best_reply(client, channel, ts):
+    replies = client.conversations_replies(token=os.environ.get("SLACK_BOT_TOKEN"), channel=channel, ts=ts)['messages']
+    #print("Replies Length is")
+    #print(len(replies))
+    #permalink = client.reactions_get(token=os.environ.get("USER_TOKEN"), channel='C02AV65UAQ2', ts='1630255947.004800'])['message']['permalink']
+    best_reply = None
+    max_reactions = 0
+    for reply in replies:
+        if "reply_count" in reply or "reactions" not in reply:
+            continue
+        # reactions = client.reactions.get(channel=channel, ts=reply['ts'])
+        n_reactions = len(reply['reactions'])
+        if max_reactions < n_reactions:
+            max_reactions = n_reactions
+            best_reply = reply
+            permalink = client.reactions_get(token=os.environ.get("USER_TOKEN"), channel=channel, timestamp=reply['ts'])['message']['permalink']
+            best_reply['permalink'] = permalink
+    return best_reply
 
 
 def search_messages(client, query):
@@ -310,7 +411,7 @@ def users_messages_count_and_filter_by_role(search_results):
     global users_messages_dict
     global role
     users_messages_dict = {}
-    users_messages_count_dict = defaultdict(int)
+    users_messages_count_dict = defaultdict(lambda: (0, 0.0))
     for message in search_results:
         if message['type'] != 'message' or message['username'] == "the_right_connections" or "blocks" not in message:
             continue
@@ -333,7 +434,15 @@ def users_messages_count_and_filter_by_role(search_results):
             users_messages_dict[user_id] = [message]
         else:
             users_messages_dict[user_id].append(message)
-        users_messages_count_dict[user_id] += 1
+        count, similarity = users_messages_count_dict[user_id]
+        #print("##########")
+        #print(message)
+        #print("########")
+        users_messages_count_dict[user_id] = (count+1, max(similarity, message['sentence_similarity']))
+    
+    for user_id, message_list in users_messages_dict.items():
+        sorted_message_list = sorted(message_list, key=lambda x: -x['sentence_similarity'])
+        users_messages_dict[user_id] = sorted_message_list
     end_time = time.time()
     #print(f"users_messages_count_and_filter_by_role method time taken: {end_time - start_time}")
 
@@ -352,6 +461,7 @@ def view_posts(body, ack, say, respond, client):
     image = user_info['profile']['image_192']
 
     total_msgs = users_messages_dict[user_id]
+    #total_msgs = sorted(total_msgs, key=lambda x: x['sentence_similarity'])
     global msgs_count
     msgs_count = len(total_msgs)
     # start: start+messages_per_page
@@ -359,9 +469,12 @@ def view_posts(body, ack, say, respond, client):
     start = 0
     global end
     global messages_per_page
+    global doc_text
     end = min(start+messages_per_page, msgs_count)
     msgs = total_msgs[start:end]
-    for message in msgs:
+    
+    for index in range(len(msgs)):
+        message = msgs[index]
         channel_name = message['channel']['name']
         message_text = message['text']
         message_link = message['permalink']
@@ -391,8 +504,31 @@ def view_posts(body, ack, say, respond, client):
                         "text": f"<@{user_id}>"
                     }
                 ]
+            },
+        )
+        if index==0:
+            message_block.append({
+			    "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": ":star: *Top Answer*"
+                }
             }
         )
+        # message_block.append(
+        #     {
+        #         "type": "section",
+        #         "text": {
+        #             "type": "mrkdwn",
+        #             "text": " "
+        #         },
+        #         "accessory": {
+        #             "type": "image",
+        #             "image_url": "https://cdn.pixabay.com/photo/2016/03/31/14/37/check-mark-1292787_1280.png",
+        #             "alt_text": "Best answer"
+        #         }
+        #     }
+        #)
         message_block.append(
             {
                 "type": "section",
@@ -411,6 +547,26 @@ def view_posts(body, ack, say, respond, client):
                 }
             }
         )
+        if "files" in message:
+            doc_text = message['files'][0]
+            message_block.append(
+                {
+                    "type": "actions",
+                    "block_id": f"{user_id}",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "action_id": "view_doc_summary",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "View summary of document",
+                            },
+                            "style": "primary",
+                            "value": "click_me_123"
+                        }
+                    ]
+                }
+            )
         # message_block.append(msg)
         if start == 0 and end == msgs_count:
             pass
@@ -448,6 +604,7 @@ def message_next_page(body, ack, say, respond, client):
     global messages_per_page
     global user_id
     global users_messages_dict
+    global doc_text
     user_info = users_info_dict[user_id]
     image = user_info['profile']['image_192']
 
@@ -507,6 +664,26 @@ def message_next_page(body, ack, say, respond, client):
                 }
             }
         )
+        if "files" in message:
+            doc_text = message['files'][0]
+            message_block.append(
+                {
+                    "type": "actions",
+                    "block_id": f"{user_id}",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "action_id": "view_doc_summary",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "View summary of document",
+                            },
+                            "style": "primary",
+                            "value": "click_me_123"
+                        }
+                    ]
+                }
+            )
         # message_block.append(msg)
         if start == 0 and end == msgs_count:
             pass
@@ -534,6 +711,7 @@ def message_previous_page(body, ack, say, respond, client):
     global messages_per_page
     global user_id
     global users_messages_dict
+    global doc_text
     user_info = users_info_dict[user_id]
     image = user_info['profile']['image_192']
 
@@ -543,7 +721,8 @@ def message_previous_page(body, ack, say, respond, client):
     end = start
     start = max(0, end-messages_per_page)
     msgs = total_msgs[start:end]
-    for message in msgs:
+    for index in range(len(msgs)):
+        message = msgs[index]
         channel_name = message['channel']['name']
         message_text = message['text']
         message_link = message['permalink']
@@ -575,6 +754,15 @@ def message_previous_page(body, ack, say, respond, client):
                 ]
             }
         )
+        if start+index==0:
+            message_block.append({
+			    "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": ":star: *Top Answer*"
+                }
+            }
+        )
         message_block.append(
             {
                 "type": "section",
@@ -593,6 +781,26 @@ def message_previous_page(body, ack, say, respond, client):
                 }
             }
         )
+        if "files" in message:
+            doc_text = message['files'][0]
+            message_block.append(
+                {
+                    "type": "actions",
+                    "block_id": f"{user_id}",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "action_id": "view_doc_summary",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "View summary of document",
+                            },
+                            "style": "primary",
+                            "value": "click_me_123"
+                        }
+                    ]
+                }
+            )
         # message_block.append(msg)
         if start == 0 and end == msgs_count:
             pass
@@ -608,6 +816,63 @@ def message_previous_page(body, ack, say, respond, client):
             blocks=message_block,
             mrkdwn=True
         )
+
+
+@app.action("view_doc_summary")
+def summarize_doc(body, ack, say, respond, client):
+    ack()
+    res = client.views_open(
+        trigger_id=body["trigger_id"],
+        view = {
+            "type": "modal",
+            "title": {
+                "type": "plain_text",
+                "text": "Summarized text",
+            },
+            "close": {
+                "type": "plain_text",
+                "text": "Cancel",
+	        },
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "Wait for AI to summarize the text"
+                    }
+                },
+            ]
+        }
+    )
+    view_id = res['view']['id']
+    title = doc_text['title']
+    download_link = doc_text['url_private']
+    download_file(title, download_link)
+    text = read_pdf(title)
+    summarized_text = summarizer_model(text, num_sentences=10)
+    res = app.client.views_update(
+        view_id=view_id,
+        view={
+            "type": "modal",
+            "title": {
+                "type": "plain_text",
+                "text": "Summarized text",
+            },
+            "close": {
+                "type": "plain_text",
+                "text": "Cancel",
+            },
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"{summarized_text}"
+                    }
+                },
+            ]
+        }
+    )
 
 
 # @app.action("channel_click")
@@ -878,7 +1143,70 @@ all_options = [
     }
 ]
 
+
+@app.command("/summarize-pdf")
+def test_summarize_file(ack, body, client):
+    ack()
+    res = client.views_open(
+        trigger_id=body["trigger_id"],
+        view = {
+            "type": "modal",
+            "title": {
+                "type": "plain_text",
+                "text": "Summarized text",
+            },
+            "close": {
+                "type": "plain_text",
+                "text": "Cancel",
+	        },
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "Wait for AI to summarize the text"
+                    }
+                },
+            ]
+        }
+    )
+    view_id = res['view']['id']
+    # print(res)
+    messages = client.conversations_history(channel='C02AE62M51V')['messages']
+    for message in messages:
+        if "files" in message:
+            title = message['files'][0]['title']
+            download_link = message['files'][0]['url_private']
+            #print(download_link)
+            download_file(title, download_link)
+            text = read_pdf(title)
+            summarized_text = summarize_text(text)
+            res = app.client.views_update(
+                view_id=view_id,
+                view={
+                    "type": "modal",
+                    "title": {
+                        "type": "plain_text",
+                        "text": "Summarized text",
+                    },
+                    "close": {
+                        "type": "plain_text",
+                        "text": "Cancel",
+                    },
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": f"{summarized_text}"
+                            }
+                        },
+                    ]
+                }
+            )
+
+
 # Start your app
 if __name__ == "__main__":
-    user_ids = ['U02AV42PDA7', 'U02ART4DY85', "U02AUTXK8LS", "U02AE6D8G07"]
+    user_ids = ['U02AV42PDA7', 'U02ART4DY85', "U02AUTXK8LS", "U02AE6D8G07", "U02CD9BPK7Y"]
     SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()

@@ -3,20 +3,20 @@ PAGINATION_VIEW = {
     "elements": [
         {
             "type": "button",
-            "action_id": "previous_page",
+            "action_id": "next_page",
             "text": {
                 "type": "plain_text",
-                "text": "Previous Post"
+                "text": "Next Post"
             },
             "style": "primary",
             "value": "click_me_123"
         },
         {
             "type": "button",
-            "action_id": "next_page",
+            "action_id": "previous_page",
             "text": {
                 "type": "plain_text",
-                "text": "Next Post"
+                "text": "Previous Post"
             },
             "style": "danger",
             "value": "click_me_123"
